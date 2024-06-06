@@ -17,9 +17,8 @@ import os
 import random
 import sys
 import time
-from logging import INFO, ERROR
-
 import psutil
+from logging import INFO, ERROR
 
 from opentelemetry import metrics
 from opentelemetry.exporter.prometheus_remote_write import (
@@ -34,15 +33,17 @@ logger = logging.getLogger(__name__)
 prometheus_env = "PROMETHEUS_REMOTE_WRITE_ENDPOINT"
 
 if prometheus_env not in os.environ:
-    logger.log(level=ERROR, msg=f"Error: The environment variable '{prometheus_env}' is not set.")
+    logger.log(
+        level=ERROR,
+        msg=f"Error: The environment variable '{prometheus_env}' is not set.",
+    )
     sys.exit(1)
-
-testing_labels = {"environment": "testing"}
 
 exporter = PrometheusRemoteWriteMetricsExporter(
     endpoint=os.getenv(prometheus_env),
     headers={"X-Scope-Org-ID": "5"},
 )
+
 reader = PeriodicExportingMetricReader(exporter, 1000)
 provider = MeterProvider(metric_readers=[reader])
 metrics.set_meter_provider(provider)
@@ -101,6 +102,7 @@ meter.create_observable_up_down_counter(
 )
 
 request_latency = meter.create_histogram("request_latency")
+testing_labels = {"environment": "testing"}
 
 # Load generator
 num = random.randint(0, 1000)
