@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 prometheus_env = "PROMETHEUS_REMOTE_WRITE_ENDPOINT"
 
 if prometheus_env not in os.environ:
-    logger.log(level=INFO, msg=f"Error: The environment variable '{prometheus_env}' is not set.")
+    logger.log(level=ERROR, msg=f"Error: The environment variable '{prometheus_env}' is not set.")
     sys.exit(1)
 
 testing_labels = {"environment": "testing"}
