@@ -12,37 +12,87 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import boto3
 import logging
 import os
+import psutil
 import random
+import requests
 import sys
 import time
+
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 from logging import INFO, ERROR
-
-import psutil
-
 from opentelemetry import metrics
 from opentelemetry.exporter.prometheus_remote_write import (
     PrometheusRemoteWriteMetricsExporter,
 )
 from opentelemetry.metrics import Observation
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.export import (
+    MetricExportResult,
+    PeriodicExportingMetricReader,
+)
+from typing import Dict
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger(__name__)
-prometheus_env = "PROMETHEUS_REMOTE_WRITE_ENDPOINT"
 
-if prometheus_env not in os.environ:
-    logger.log(level=ERROR, msg=f"Error: The environment variable '{prometheus_env}' is not set.")
+if "PROMETHEUS_REMOTE_WRITE_ENDPOINT" not in os.environ:
+    logger.log(
+        level=ERROR,
+        msg="Error: The environment variable 'PROMETHEUS_REMOTE_WRITE_ENDPOINT' is not set.",
+    )
+
     sys.exit(1)
 
-testing_labels = {"environment": "testing"}
 
-exporter = PrometheusRemoteWriteMetricsExporter(
-    endpoint=os.getenv(prometheus_env),
-    headers={"X-Scope-Org-ID": "5"},
+class SigV4PrometheusRemoteWriteMetricsExporter(PrometheusRemoteWriteMetricsExporter):
+    def _send_message(self, message: bytes, headers: Dict) -> MetricExportResult:
+        cert = None
+        verify = True
+        if self.tls_config:
+            if "ca_file" in self.tls_config:
+                verify = self.tls_config["ca_file"]
+            elif "insecure_skip_verify" in self.tls_config:
+                verify = self.tls_config["insecure_skip_verify"]
+
+            if "cert_file" in self.tls_config and "key_file" in self.tls_config:
+                cert = (
+                    self.tls_config["cert_file"],
+                    self.tls_config["key_file"],
+                )
+        try:
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            credentials = credentials.get_frozen_credentials()
+            request = AWSRequest(
+                method="POST", url=self.endpoint, headers=headers, data=message
+            )
+            SigV4Auth(credentials, "aps", session.region_name).add_auth(request)
+
+            response = requests.post(
+                self.endpoint,
+                data=message,
+                headers=dict(request.headers),
+                timeout=self.timeout,
+                proxies=self.proxies,
+                cert=cert,
+                verify=verify,
+            )
+            if not response.ok:
+                response.raise_for_status()
+        except requests.exceptions.RequestException as err:
+            logger.error("Export POST request failed with reason: %s", err)
+            return MetricExportResult.FAILURE
+        return MetricExportResult.SUCCESS
+
+
+exporter = SigV4PrometheusRemoteWriteMetricsExporter(
+    endpoint=os.getenv("PROMETHEUS_REMOTE_WRITE_ENDPOINT"), timeout=10
 )
+
 reader = PeriodicExportingMetricReader(exporter, 1000)
 provider = MeterProvider(metric_readers=[reader])
 metrics.set_meter_provider(provider)
@@ -100,6 +150,7 @@ meter.create_observable_up_down_counter(
     unit="1",
 )
 
+testing_labels = {"environment": "testing"}
 request_latency = meter.create_histogram("request_latency")
 
 # Load generator
